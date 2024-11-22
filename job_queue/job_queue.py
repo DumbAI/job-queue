@@ -232,9 +232,10 @@ class DynamoDBJobQueue(JobQueue):
         if hydrate:
             for file in iterate_file_fields(job):
                 file_path = f"{job.JobId}/{file.Name}"
-                with io.BytesIO() as buffer:
-                    self.bucket.download_fileobj(file_path, buffer)
-                    file.content = buffer
+                buffer = io.BytesIO()
+                self.bucket.download_fileobj(file_path, buffer)
+                file.content = buffer
+                file.content.seek(0)
 
         return job
 
@@ -242,7 +243,6 @@ class DynamoDBJobQueue(JobQueue):
         # Upload file to S3
         for file in iterate_file_fields(job):
             file_path = f"{job.JobId}/{file.Name}"
-            breakpoint()
             file.content.seek(0)
             self.bucket.upload_fileobj(file.content, file_path)
 
