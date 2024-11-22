@@ -1,6 +1,5 @@
 # scheduler module poll job queue and launch workflows
 from abc import ABC, abstractmethod
-import os
 import io
 import boto3
 from datetime import datetime
@@ -40,7 +39,8 @@ class JobRequest(BaseModel):
     """
     All input data and metadata of a job 
     """
-    InputFiles: List[File]
+    InputFiles: List[File] = Field(default=[])
+    Params: Dict[str, Any] = Field(default={})
 
 class JobResponse(BaseModel):
     """
@@ -56,14 +56,14 @@ class Job(BaseModel):
     Job request model
     """
     # Metadata
-    JobId: str
-    JobType: str
-    CreatedAt: str
-    Status: JobStatus = JobStatus.PENDING
+    JobId: str | None
+    JobType: str | None
+    CreatedAt: str | None
+    Status: JobStatus | None = JobStatus.PENDING
 
     # Payload
-    Request: JobRequest
-    Response: JobResponse
+    Request: JobRequest | None
+    Response: JobResponse | None
 
     @field_serializer('Status')
     def serialize_status(self, status: JobStatus, _info):
@@ -76,21 +76,21 @@ class JobQueue(ABC):
     """
 
     @abstractmethod
-    def add(self):
+    def add(self, job: Job) -> Dict[str, Any]:
         """
         add a new job to job queue
         """
         pass
 
     @abstractmethod
-    def get(self):
+    def get(self, job_id: str, hydrate: bool = False) -> Job:
         """
         get a job from job queue
         """
         pass
 
     @abstractmethod
-    def update(self):
+    def update(self, job: Job):
         """
         update job status
         """
@@ -98,7 +98,7 @@ class JobQueue(ABC):
 
 
     @abstractmethod
-    def scan(self, status: str):
+    def scan(self, status: str) -> List[Job]:
         """
         scan job queue and return a list of jobs
         """
@@ -106,7 +106,7 @@ class JobQueue(ABC):
 
 
     @abstractmethod
-    def poll(self):
+    def poll(self) -> List[Job]:
         """
         poll pending jobs from job queue for execution
         this method should be only called by the job scheduler
@@ -185,10 +185,11 @@ class DynamoDBJobQueue(JobQueue):
         self.table = self.dynamodb.Table(table_name)
         self.bucket = self.s3.Bucket(bucket_name)
 
-    def add(self, job: JobRequest):
+    def add(self, job: Job):
         # Create an unique job ID
         job.JobId = str(uuid4())
         job.Status = JobStatus.PENDING
+        job.CreatedAt = datetime.now().isoformat()
 
         # Always upload binary payload to S3 first
         for file in iterate_file_fields(job):
@@ -201,7 +202,7 @@ class DynamoDBJobQueue(JobQueue):
             Item=job.model_dump()
         )
 
-        return response.get('Attributes', {})
+        return job
 
     def get(self, job_id: str, hydrate: bool = False):
         # get a job from dynamoDB table
@@ -213,7 +214,6 @@ class DynamoDBJobQueue(JobQueue):
 
         job = Job(**response['Item'])
 
-        # TODO: hydrate files by downloading its content from S3
         if hydrate:
             for file in iterate_file_fields(job):
                 file_path = f"{job.JobId}/{file.Name}"
@@ -224,6 +224,11 @@ class DynamoDBJobQueue(JobQueue):
         return job
 
     def update(self, job: Job):
+        # Upload file to S3
+        for file in iterate_file_fields(job):
+            file_path = f"{job.JobId}/{file.Name}"
+            self.bucket.upload_fileobj(file.content, file_path)
+
         self.table.put_item(
             Item=job.model_dump(),
             Expected={
@@ -280,7 +285,8 @@ class SingleThreadJobScheduler(JobScheduler):
         while not self.stop_event.is_set():
             jobs = self.job_queue.poll()
             for job in jobs:
-                self._execute_job(job)
+                hydrated_job = self.job_queue.get(job.JobId, hydrate=True)
+                self._execute_job(hydrated_job)
                 time.sleep(self.sleep_time)
                 if self.stop_event.is_set():
                     break
@@ -316,30 +322,43 @@ class TestWorkflow(Workflow):
         print(f'Processing job {request}')
         return JobResponse(OutputFiles=[])
 
+
+class EchoWorkflow(Workflow):
+    def __call__(self, request: JobRequest) -> JobResponse:
+        print(f'Processing job {request}')
+        # Echo the input files
+        output_files = []
+        for file in request.Request.InputFiles:
+            output_files.append(
+                File(Name=file.Name, content=file.content))
+
+        return JobResponse(OutputFiles=output_files)
+
+
 if __name__ == '__main__':
     job_queue = DynamoDBJobQueue(
         table_name='xiaoapp-job-queue', 
         secondary_index_name='QueueIndex', 
         bucket_name='xiaoapp-job-data'
     )
-    job = Job(
-        JobId='1', 
-        JobType='test', 
-        CreatedAt=datetime.now().isoformat(), 
-        Status=JobStatus.PENDING, 
-        Request=JobRequest(
-            InputFiles=[
-                File(Name='file1.txt', content=io.BytesIO(b'Hello, world!')),
-                File(Name='file2.txt', content=io.BytesIO(b'Hello, world!'))
-            ]
-        ),
-        Response=JobResponse(OutputFiles=[])
-    )
 
-    new_job = job_queue.add(job)
+    # job = Job(
+    #     JobId='1', 
+    #     JobType='test', 
+    #     CreatedAt=datetime.now().isoformat(), 
+    #     Status=JobStatus.PENDING, 
+    #     Request=JobRequest(
+    #         InputFiles=[
+    #             File(Name='file1.txt', content=io.BytesIO(b'Hello, world!')),
+    #             File(Name='file2.txt', content=io.BytesIO(b'Hello, world!'))
+    #         ]
+    #     ),
+    #     Response=JobResponse(OutputFiles=[])
+    # )
+    # new_job = job_queue.add(job)
 
     scheduler = SingleThreadJobScheduler(job_queue)
-    scheduler.register_workflow('test', TestWorkflow())
+    scheduler.register_workflow('echo', EchoWorkflow())
     scheduler.run()
 
     
