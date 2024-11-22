@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 import io
 import boto3
 from datetime import datetime
-from typing import Dict, List, Any, Type, get_origin, Callable
+from typing import Dict, List, Any, Type, get_origin, Callable, Collection
 from pydantic import BaseModel, field_serializer, Field, model_serializer
 from enum import Enum
 import time
@@ -56,10 +56,10 @@ class Job(BaseModel):
     Job request model
     """
     # Metadata
-    JobId: str | None
-    JobType: str | None
-    CreatedAt: str | None
-    Status: JobStatus | None = JobStatus.PENDING
+    JobId: str
+    JobType: str
+    CreatedAt: str
+    Status: JobStatus = JobStatus.PENDING
 
     # Payload
     Request: JobRequest | None
@@ -76,7 +76,7 @@ class JobQueue(ABC):
     """
 
     @abstractmethod
-    def add(self, job: Job) -> Dict[str, Any]:
+    def add(self, job: JobRequest) -> Dict[str, Any]:
         """
         add a new job to job queue
         """
@@ -153,24 +153,34 @@ class JobScheduler(ABC):
 
 
 def iterate_file_fields(model: BaseModel, prefix: str = ""):
+    if model is None:
+        return
+
+    if not (isinstance(model, BaseModel) or isinstance(model, Collection)):
+        return
+
+    if isinstance(model, str):
+        return
+
     if isinstance(model, File):
         yield model
+
     for field_name, field_info in model.model_fields.items():
-        if isinstance(field_info.annotation, type) or get_origin(field_info.annotation) == list or get_origin(field_info.annotation) == dict:
-            if isinstance(field_info.annotation, File):
-                # For non-model fields, add them to the result
-                yield getattr(model, field_name)
-            elif get_origin(field_info.annotation) == list:
-                for item in getattr(model, field_name):
-                    yield from iterate_file_fields(item)
-            elif get_origin(field_info.annotation) == dict:
-                for key, value in getattr(model, field_name).items():
-                    yield from iterate_file_fields(value)
-            elif issubclass(field_info.annotation, BaseModel):
-                # If the field is another Pydantic model, recurse into it
-                nested_value = getattr(model, field_name)
-                if nested_value is not None:
-                    yield from iterate_file_fields(nested_value)
+        # if isinstance(field_info.annotation, type) or get_origin(field_info.annotation) == list or get_origin(field_info.annotation) == dict:
+        field = getattr(model, field_name)
+        if isinstance(field, File):
+            # For non-model fields, add them to the result
+            yield field
+        elif isinstance(field, Collection):
+            for item in field:
+                yield from iterate_file_fields(item)
+        elif isinstance(field, Dict):
+            for key, value in field.items():
+                yield from iterate_file_fields(value)
+        elif isinstance(field, BaseModel):
+            # If the field is another Pydantic model, recurse into it
+            if field is not None:
+                yield from iterate_file_fields(field)
 
 
 class DynamoDBJobQueue(JobQueue):
@@ -185,16 +195,21 @@ class DynamoDBJobQueue(JobQueue):
         self.table = self.dynamodb.Table(table_name)
         self.bucket = self.s3.Bucket(bucket_name)
 
-    def add(self, job: Job):
-        # Create an unique job ID
-        job.JobId = str(uuid4())
-        job.Status = JobStatus.PENDING
-        job.CreatedAt = datetime.now().isoformat()
+    def add(self, job_request: JobRequest, job_type: str):
+        job = Job(
+            JobId=str(uuid4()),
+            JobType=job_type,
+            Request=job_request,
+            Response=None,
+            Status=JobStatus.PENDING,
+            CreatedAt=datetime.now().isoformat()
+        )
 
         # Always upload binary payload to S3 first
-        for file in iterate_file_fields(job):
+        for file in iterate_file_fields(job_request):
             # upload file to S3
             file_path = f"{job.JobId}/{file.Name}"
+            print(f'Uploading file {file_path} to S3')
             self.bucket.upload_fileobj(file.content, file_path)
 
         # Then insert job metadata into dynamoDB
@@ -227,6 +242,8 @@ class DynamoDBJobQueue(JobQueue):
         # Upload file to S3
         for file in iterate_file_fields(job):
             file_path = f"{job.JobId}/{file.Name}"
+            breakpoint()
+            file.content.seek(0)
             self.bucket.upload_fileobj(file.content, file_path)
 
         self.table.put_item(
@@ -312,6 +329,9 @@ class SingleThreadJobScheduler(JobScheduler):
             self.job_queue.update(job)
         except Exception as e:
             print(f'Error processing job {job.JobId}: {e}')
+            # print stack trace
+            import traceback
+            traceback.print_exc()
             job.Status = JobStatus.FAILED
             job.Response = JobResponse(Error=str(e))
             self.job_queue.update(job)
@@ -328,9 +348,14 @@ class EchoWorkflow(Workflow):
         print(f'Processing job {request}')
         # Echo the input files
         output_files = []
-        for file in request.Request.InputFiles:
+        for file in request.InputFiles:
+            print(f'Echoing file {file.content}')
+
+            new_buffer = io.BytesIO()
+            new_buffer.write(file.content.read())
+            new_buffer.seek(0)
             output_files.append(
-                File(Name=file.Name, content=file.content))
+                File(Name=f'{file.Name}-echo', content=new_buffer))
 
         return JobResponse(OutputFiles=output_files)
 
