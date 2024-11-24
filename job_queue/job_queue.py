@@ -350,7 +350,6 @@ class EchoWorkflow(Workflow):
         output_files = []
         for file in request.InputFiles:
             print(f'Echoing file {file.content}')
-
             new_buffer = io.BytesIO()
             new_buffer.write(file.content.read())
             new_buffer.seek(0)
