@@ -9,6 +9,7 @@ from enum import Enum
 import time
 from uuid import uuid4
 from boto3.dynamodb.conditions import Key, Attr
+from boto3.dynamodb.types import Decimal
 from threading import Event
 
 
@@ -23,7 +24,7 @@ def replace_decimals(obj):
         for k in obj.keys():
             obj[k] = replace_decimals(obj[k])
         return obj
-    elif isinstance(obj, decimal.Decimal):
+    elif isinstance(obj, Decimal):
         if obj % 1 == 0:
             return int(obj)
         else:
