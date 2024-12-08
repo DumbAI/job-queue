@@ -11,6 +11,26 @@ from uuid import uuid4
 from boto3.dynamodb.conditions import Key, Attr
 from threading import Event
 
+
+# utility function to replace decimal.Decimal with int or float
+# DynamoDB converts all numbers to Decimal object
+def replace_decimals(obj):
+    if isinstance(obj, list):
+        for i in xrange(len(obj)):
+            obj[i] = replace_decimals(obj[i])
+        return obj
+    elif isinstance(obj, dict):
+        for k in obj.iterkeys():
+            obj[k] = replace_decimals(obj[k])
+        return obj
+    elif isinstance(obj, decimal.Decimal):
+        if obj % 1 == 0:
+            return int(obj)
+        else:
+            return float(obj)
+    else:
+        return obj
+
 """
 Basic data types used in a job
 """
@@ -227,7 +247,9 @@ class DynamoDBJobQueue(JobQueue):
             }        
         )
 
-        job = Job(**response['Item'])
+        payload = replace_decimals(response['Item'])
+
+        job = Job(**payload)
 
         if hydrate:
             for file in iterate_file_fields(job):
