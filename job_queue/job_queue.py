@@ -11,6 +11,7 @@ from uuid import uuid4
 from boto3.dynamodb.conditions import Key, Attr
 from boto3.dynamodb.types import Decimal
 from threading import Event
+from loguru import logger
 
 
 # utility function to replace decimal.Decimal with int or float
@@ -322,6 +323,7 @@ class SingleThreadJobScheduler(JobScheduler):
 
     def run(self):
         while not self.stop_event.is_set():
+            logger.info('Polling job queue...')
             jobs = self.job_queue.poll()
             for job in jobs:
                 hydrated_job = self.job_queue.get(job.JobId, hydrate=True)
