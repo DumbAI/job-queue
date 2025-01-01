@@ -315,7 +315,7 @@ class DynamoDBJobQueue(JobQueue):
 
 
 class SingleThreadJobScheduler(JobScheduler):
-    def __init__(self, job_queue: JobQueue, interval: int = 10):
+    def __init__(self, job_queue: JobQueue, interval: int = 5):
         self.job_queue = job_queue
         self.stop_event = Event()
         self.workflows = {}
@@ -328,9 +328,9 @@ class SingleThreadJobScheduler(JobScheduler):
             for job in jobs:
                 hydrated_job = self.job_queue.get(job.JobId, hydrate=True)
                 self._execute_job(hydrated_job)
-                time.sleep(self.sleep_time)
                 if self.stop_event.is_set():
                     break
+            time.sleep(self.sleep_time)
 
     def stop(self):
         self.stop_event.set()
