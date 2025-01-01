@@ -314,12 +314,11 @@ class DynamoDBJobQueue(JobQueue):
 
 
 class SingleThreadJobScheduler(JobScheduler):
-    def __init__(self, job_queue: JobQueue):
+    def __init__(self, job_queue: JobQueue, interval: int = 10):
         self.job_queue = job_queue
         self.stop_event = Event()
         self.workflows = {}
-        self.sleep_time = 5
-
+        self.sleep_time = interval
 
     def run(self):
         while not self.stop_event.is_set():
